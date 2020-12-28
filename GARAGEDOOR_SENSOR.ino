@@ -8,34 +8,21 @@
 //
 ///////////////////////////////////////////////////////////////////////
 #include <SPI.h>
-#include <LoRa.h>
-#include <SSD1306.h>
-//#include <RCSwitch.h>
 #include <ArduinoJson.h>
-#include <AESLib.h>
+#include "display.h"
+#include "security.h"
+#include "gg_lora.h"
 
-// PIN definitions
+
+// PIN definitions for switches
 #define PIN_SW_CLOSE 13
 #define PIN_SW_OPEN  21
-#define PIN_GY_X 25  // pin for x direction
-#define PIN_GY_Y 35  // pin for y direction
-#define PIN_GY_Z 34  // pin for z direction
+// to operate the relay that operates the garage remote control
+#define PIN_RELAY    17 
 
-// useful constants
 
 // for debouncing
 #define DEBOUNCE_DELAY 50
-
-// for the accellerometer
-#define X_SLOPE 0.0025
-#define X_INTERCEPT -2.595
-#define Y_SLOPE 0.00333333
-#define Y_INTERCEPT -4.56
-#define Z_SLOPE 0.00248139
-#define Z_INTERCEPT -2.707196
-#define X_CENTER 1838
-#define Y_CENTER 1968
-#define Z_CENTER 1897
 
 // global variables.
 unsigned long CloseSwitchChangeTime = 0;
@@ -53,34 +40,21 @@ typedef enum {
    DS_UNKNOWN
 } DOORSTATUS;
 
-// I want to record the last stable measurements from the sensors
+// I want to record the last stable measurement from the sensors
 typedef struct {
   int           intOpen;
   int           intClose;
   DOORSTATUS    status;
-  int           doorAngle;
+  DOORSTATUS    prevstatus;   // this is set, each time we send "status"
+  int           repeat;
   int           startUpTime;
   unsigned long timeOfLastChange;
 } LASTSTATE;
+LASTSTATE lastState;
 
-#define GY_SAMPLES 4
-typedef struct {
-  // Settings for the Accellerometer
-  float x[GY_SAMPLES];
-  float y[GY_SAMPLES];
-  float z[GY_SAMPLES];
-  int gy_hw = 0;
-  int samplesize = 1;
-} GYROREADINGS;
-
-static LASTSTATE lastState;
-static volatile GYROREADINGS gyroReadings;
-
-// Variables for Gyro Sensoor reading interupt
-volatile int interruptGyroCounter = 0;
-int          totalInterruptGyroCounter = 0;
-hw_timer_t * timerGyro = NULL;
-portMUX_TYPE timerGyroMux = portMUX_INITIALIZER_UNLOCKED;
+byte  localAddress = 0xAA;     // address of this device
+byte  destination  = 0xBB;     // destination to send to
+int   counter      = 0;
 
 // variables for LoRa (time to send message) interupt.
 volatile int interruptLoRaCounter = 0;
@@ -88,86 +62,15 @@ int          totalInterruptLoRaCounter = 0;
 hw_timer_t * timerLoRa = NULL;
 portMUX_TYPE timerLoRaMux = portMUX_INITIALIZER_UNLOCKED;
 
-// Sperate mutext to avoid contention of the gyro readings.
-portMUX_TYPE sensorMux = portMUX_INITIALIZER_UNLOCKED;
-
 // we plan to transmit LORA message on a sperate thread
 TaskHandle_t taskLoRa;
 
-// ----------------------------------------------------------------
-//
-// This evidently measure's the ADC's voltage to nearer 1%
-// ----------------------------------------------------------------
-double ReadVoltage(byte pin){
-  double reading = analogRead(pin); // Reference voltage is 3v3 so maximum reading is 3v3 = 4095 in range 0 to 4095
-  if(reading < 1 || reading >= 4095)
-    return 0;
-    
-  // return -0.000000000009824 * pow(reading,3) + 0.000000016557283 * pow(reading,2) + 0.000854596860691 * reading + 0.065440348345433;
-  return -0.000000000000016 * pow(reading,4) + 0.000000000118171 * pow(reading,3)- 0.000000301211691 * pow(reading,2)+ 0.001109019271794 * reading + 0.034143524634089;
-} // Added an improved polynomial, use either, comment out as required
+// Onscreen Information
+String os_header = "Garage Sensor";
+String os_rssi = "";
+String os_snr = "";
+String os_cmd = "";
 
-
-// ----------------------------------------------------------------
-//
-// Convers Radians to Degrees
-// ----------------------------------------------------------------
-float rad2deg(float angle)
-{
-    return 180.0 * (angle / 3.1415926);
-}
-
-
-// ----------------------------------------------------------------
-//
-// Computes the angle of the accelterometer from it's readings
-// ----------------------------------------------------------------
-float computeDoorAngle()
-{
-    float angle_x; 
-    float angle_y;
-  
-    float value_x = 0.0;
-    float value_y = 0.0;
-    float value_z = 0.0;
-
-    int ss = 0;
-      
-    // compute average
-    portENTER_CRITICAL_ISR(&sensorMux);
-    ss = gyroReadings.samplesize;
-    for( int i = 0; i< ss; i++ )
-    {
-      value_x += gyroReadings.x[i];   
-      value_y += gyroReadings.y[i];   
-      value_z += gyroReadings.z[i];   
-    }
-    portEXIT_CRITICAL_ISR(&sensorMux); 
-    
-    value_x = value_x / ss;
-    value_y = value_y / ss;    
-    value_z = value_z / ss;    
-     
-    float x2 = value_x * value_x;
-    float y2 = value_y * value_y;  
-    float z2 = value_z * value_z; 
-
-    //angle_x = sqrt( y2 + z2 );
-    //angle_x =  value_x / angle_x;
-    //angle_x = rad2deg(atan( angle_x ));
-
-    angle_y = sqrt( x2 + z2 );
-    angle_y =  value_y / angle_y;
-    angle_y = rad2deg(atan( angle_y ));
-
-    // Convert angley into calibrated value:
-    //angle_y = (fabs(angle_y) - 16) / 0.82;
-    // now round to nearst 5 degrees
-    //div_t dv = div( angle_y, 5);
-    //angle_y = dv.quot * 5;
-
-    return(angle_y);
-}
 
 
 // ----------------------------------------------------------------
@@ -176,7 +79,7 @@ void transmitLoRaMessage( void* parameter )
 {
     float angle;
     
-    // create an infinate loop
+    // create an infinite loop
     for(;;) {
         // lets see if it is time to make a sensor measurement...
         if (interruptLoRaCounter > 0) {
@@ -186,32 +89,31 @@ void transmitLoRaMessage( void* parameter )
       
           totalInterruptLoRaCounter++;
 
-          angle = computeDoorAngle();
-          
+         
           Serial.print("On core ");
           Serial.print(xPortGetCoreID());
           Serial.print(" a LoRa interrupt has occurred. Total number: ");
-          Serial.print(totalInterruptLoRaCounter);
-          Serial.print( " angle is " );
-          Serial.println( angle );
-         
+          Serial.println(totalInterruptLoRaCounter);
+
+          char message[128];
+
+          // but...do I want to send the message. Each state change is sent twice only.
+          if ( lastState.status != lastState.prevstatus ) {
+            sprintf( message, "{frm:%d,to:%d,cnt:%d,ds:%d,t:%d}", localAddress, destination, counter++, (int)lastState.status, (int)lastState.timeOfLastChange );
+            loraSendMessage( message );
+            lastState.prevstatus = lastState.status;
+            lastState.repeat = true;
+          } else {
+            if ( lastState.repeat ) {
+              sprintf( message, "{frm:%d,to:%d,cnt:%d,ds:%d,t:%d}", localAddress, destination, counter++, (int)lastState.status, (int)lastState.timeOfLastChange );
+              loraSendMessage( message );
+              lastState.repeat = false;
+            }
+          }
         }
     }
 }
 
-
-// ----------------------------------------------------------------
-//
-// Interupt Handler....I'm going to use this to time when to make
-// an angle measurement which I don't want to have to do to frequently.
-// in normal opperation this only need to be done say, every 2 seconds(?)
-// ---------------------------------------------------------------- 
-void IRAM_ATTR onGyroTimer() {
-  portENTER_CRITICAL_ISR(&timerGyroMux);
-  interruptGyroCounter++;
-  portEXIT_CRITICAL_ISR(&timerGyroMux);
- 
-}
 
 // ----------------------------------------------------------------
 //
@@ -256,29 +158,18 @@ String doorStatusToString( const DOORSTATUS status )
   return retVal;
 }
 
-
-
-// ----------------------------------------------------------------
-//
-// Thus reads the values from the accellerometer
-// we record "GY_SAMPLES" worth of data s owe can compute a smoother average.
-// ----------------------------------------------------------------
-void readAccellerometer()
+// will probably eventually do this on an interupt 
+void updateDisplay()
 {
-  portENTER_CRITICAL_ISR(&sensorMux);
-  
-  gyroReadings.x[gyroReadings.gy_hw] = float(analogRead(PIN_GY_X) - X_CENTER) / X_CENTER; //read from xpin
-  gyroReadings.y[gyroReadings.gy_hw] = float(analogRead(PIN_GY_Y) - Y_CENTER) / Y_CENTER;  //read from ypin
-  gyroReadings.z[gyroReadings.gy_hw] = float(analogRead(PIN_GY_Z) - Z_CENTER) / Z_CENTER;  //read from zpin
-    
-    if (gyroReadings.samplesize < GY_SAMPLES)
-      gyroReadings.samplesize++;
+   String scndLine;
+   String thrdLine;
+   String frthLine;
 
-    gyroReadings.gy_hw++;
-    if (gyroReadings.gy_hw >= GY_SAMPLES)
-      gyroReadings.gy_hw = 0;
+   scndLine = "Status:  " + doorStatusToString(lastState.status);
+   thrdLine = "RSSI: " + os_rssi + " SNR:" + os_snr + "db";
+   frthLine = "Last Command: " + os_cmd;
 
-  portEXIT_CRITICAL_ISR(&sensorMux);        
+   display_Lines( os_header, scndLine, thrdLine, frthLine );
 }
 
 // ----------------------------------------------------------------
@@ -331,9 +222,10 @@ void ResetDoorStatus()
    if ( lastState.intOpen == 1 && lastState.intClose == 0 )
     lastState.status = DS_CLOSED;     
 
-  String msg = "Initial door state = ";
-  msg += doorStatusToString(lastState.status);
-  Serial.println(msg);     
+  // the next we need to do is ensure we send this status. This only sends the 1st message once 
+  lastState.prevstatus = lastState.status;
+  lastState.repeat = false;
+  
 }
 
 void setup() {
@@ -341,26 +233,28 @@ void setup() {
   // initialize Serial Monitor
   Serial.begin(115200);
   Serial.println("Runnning...");
-  
+
+  // define the relay output pin
+  pinMode(PIN_RELAY, OUTPUT);
+  digitalWrite(PIN_RELAY, HIGH);
   // Set up switch interrupts
   pinMode( PIN_SW_CLOSE, INPUT_PULLUP);
   pinMode( PIN_SW_OPEN,  INPUT_PULLUP);
 
   ResetDoorStatus();
+
+  // now show we are ready to go on the display
+  init_Display();
+
+  init_Lora();
   
   attachInterrupt(digitalPinToInterrupt(PIN_SW_CLOSE), handleDoorClosingInterrupt, CHANGE);
   attachInterrupt(digitalPinToInterrupt(PIN_SW_OPEN), handleDoorOpeningInterrupt, CHANGE);
 
-  // lets get the interupt timer started for the gyroscope sensor measurement (raw data)
-  timerGyro = timerBegin(0, 80, true);     // this "turns" 80Mz into 1Mhz
-  timerAttachInterrupt(timerGyro, &onGyroTimer, true);
-  timerAlarmWrite(timerGyro, 500000, true); // this "turns" 1Mhz into 0.5 seconds.
-  timerAlarmEnable(timerGyro);
-
-  // lets get the interupt timer started for the gyroscope sensor measurement (raw data)
+  // lets get the interupt timer started for....
   timerLoRa = timerBegin(1, 80, true);     // this "turns" 80Mz into 1Mhz
   timerAttachInterrupt(timerLoRa, &onLoRaTimer, true);
-  timerAlarmWrite(timerLoRa, 3500000, true); // this "turns" 1Mhz into 3.5 seconds.
+  timerAlarmWrite(timerLoRa, 5000000, true); // this "turns" 1Mhz into 5,0 seconds.
   timerAlarmEnable(timerLoRa);
 
   lastState.startUpTime = millis();
@@ -374,6 +268,30 @@ void setup() {
 
   Serial.print("Main loop running on core ");
   Serial.println(xPortGetCoreID());
+
+  display_Lines( "READY", doorStatusToString(lastState.status) );
+}
+
+void taskOpenCloseGarageDoor( void* parameter )
+{
+  return;
+}
+
+
+void InstigateGarageDoorOpenClose()
+{
+  // we plan to run through the open/close door sequence via multitasking. The task runs and exists so no
+  // need to remember the task handle.
+  TaskHandle_t taskGG;
+
+  xTaskCreatePinnedToCore(
+      taskOpenCloseGarageDoor, "ggOpenClose", 10000, 
+      NULL,  /* Task input parameter */
+      0,  /* Priority of the task */
+      &taskGG,  /* Task handle. */
+      0); /* Core where the task should run */
+
+  return;  
 }
 
 void loop() {
@@ -477,31 +395,44 @@ void loop() {
     lastState.timeOfLastChange = millis();    
   } // if  
 
-
-  // lets see if it is time to make a sensor measurement...
-  if (interruptGyroCounter > 0) {
-    portENTER_CRITICAL(&timerGyroMux);
-    interruptGyroCounter--;
-    portEXIT_CRITICAL(&timerGyroMux);
-    
-    totalInterruptGyroCounter++;
-    readAccellerometer();
-    Serial.print("An gyro interrupt has occurred. Total number: ");
-    Serial.println(totalInterruptGyroCounter);
-  }
-
-  // lets see if it is time to make a sensor measurement...
-  if (interruptLoRaCounter > 0) {
-    portENTER_CRITICAL(&timerLoRaMux);
-    interruptLoRaCounter--;
-    portEXIT_CRITICAL(&timerLoRaMux);
-
-    totalInterruptLoRaCounter++;
-    Serial.print("An LoRa interrupt has occurred. Total number: ");
-    Serial.println(totalInterruptLoRaCounter);
-    
-  }
-
   delay(100);
-  // now what? 
+
+  String incoming_msg;
+  if (onReceive(LoRa.parsePacket(), incoming_msg, os_rssi, os_snr )) {
+     // got something
+     // but now need to deserialise decypted message into JSON object and use that to work out what to do next
+    DynamicJsonDocument jsonBuffer(512);
+    DeserializationError error = deserializeJson(jsonBuffer, incoming_msg); 
+    // Test if parsing succeeds.
+    if (error) {
+      Serial.println("gg_lora: onReceived(): parseObject() failed");
+    } else {
+  
+      // is message for this device?
+      // if the recipient isn't this for this device or broadcast
+      byte recipient = jsonBuffer[String("to")];
+      if (recipient != localAddress ) { // && recipient != 0xe3) {
+        Serial.print("warning: This message to '" );
+        Serial.print( recipient );
+        Serial.println("'; is not for me.");
+        //return;                             // skip rest of function
+      }
+    
+      Serial.print( "Command Message Received: ");
+      String cmd = jsonBuffer[String("cmd")];
+      os_cmd = cmd;
+      Serial.println( cmd ); 
+      // at this point we have to "handle" the message. E.g. open or close the garage door?
+      if (cmd.equals("OPEN") || cmd.equals("CLOSE")) {
+        Serial.println( "**Activating remote**" );         
+        digitalWrite(PIN_RELAY, LOW);
+        delay(400);
+        digitalWrite(PIN_RELAY, HIGH);        
+      }
+
+    }  
+  }
+
+  updateDisplay();
+
 }
