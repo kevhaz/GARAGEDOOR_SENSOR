@@ -70,6 +70,7 @@ String os_header = "Garage Sensor";
 String os_rssi = "";
 String os_snr = "";
 String os_cmd = "";
+String os_ts = "";
 
 
 
@@ -164,12 +165,14 @@ void updateDisplay()
    String scndLine;
    String thrdLine;
    String frthLine;
+   String fithLine;
 
    scndLine = "Status:  " + doorStatusToString(lastState.status);
-   thrdLine = "RSSI: " + os_rssi + " SNR:" + os_snr + "db";
-   frthLine = "Last Command: " + os_cmd;
-
-   display_Lines( os_header, scndLine, thrdLine, frthLine );
+   thrdLine = "Last Command: " + os_cmd;
+   frthLine = os_ts;
+   fithLine = "RSSI: " + os_rssi + " SNR:" + os_snr + "db";
+   
+   display_Lines( os_header, scndLine, thrdLine, frthLine, fithLine );
 }
 
 // ----------------------------------------------------------------
@@ -272,6 +275,7 @@ void setup() {
   display_Lines( "READY", doorStatusToString(lastState.status) );
 }
 
+// Not used at present....maybe one day
 void taskOpenCloseGarageDoor( void* parameter )
 {
   return;
@@ -421,6 +425,9 @@ void loop() {
       Serial.print( "Command Message Received: ");
       String cmd = jsonBuffer[String("cmd")];
       os_cmd = cmd;
+      String ts = jsonBuffer[String("ts")];
+      os_ts = ts;
+
       Serial.println( cmd ); 
       // at this point we have to "handle" the message. E.g. open or close the garage door?
       if (cmd.equals("OPEN") || cmd.equals("CLOSE")) {

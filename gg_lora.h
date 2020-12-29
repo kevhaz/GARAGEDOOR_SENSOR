@@ -20,16 +20,16 @@ void loraSendMessage( char* msg )
 
   Serial.println( "gg_lora.h: loraSendMessage entered" );
   byte enc_iv[N_BLOCK] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }; // iv_block gets written to, provide own fresh copy...
-  String encrypted = security_encrypt(msg, enc_iv);
+  char ciphertext[3*INPUT_BUFFER_LIMIT] = {0}; // THIS IS OUTPUT BUFFER (FOR BASE64-ENCODED ENCRYPTED DATA)
+  uint16_t msgLen = strlen( msg );
   
+  uint16_t encrypted_len = security_encrypt(msg, msgLen, enc_iv, ciphertext);
   Serial.println( msg );
-  Serial.println( encrypted );
-
-  LoRa.beginPacket();                   // start packet
-  LoRa.write(strlen(msg));              // add payload length
-  LoRa.print(encrypted);                // add payload
-  LoRa.endPacket();
-
+  Serial.println( ciphertext );  
+  LoRa.beginPacket();               // start packet
+  LoRa.write(msgLen);               // add payload length
+  LoRa.print(ciphertext);           // add payload
+  LoRa.endPacket();  
   Serial.println( "gg_lora.h: loraSendMessage complete" );
 }
 
@@ -48,6 +48,8 @@ void init_Lora()
 
 bool onReceive(int packetSize, String& incoming, String& rssi, String& snr ) 
 {
+  char cleartext[INPUT_BUFFER_LIMIT] = {0}; // THIS IS INPUT BUFFER (FOR TEXT)
+  
   if (packetSize == 0) return (false);          // if there's no packet, return
 
   byte messageLength = LoRa.read();    // incoming msg length
@@ -59,23 +61,24 @@ bool onReceive(int packetSize, String& incoming, String& rssi, String& snr )
   // assume incomming is encrypted
   // Decrypt
   byte dec_iv[N_BLOCK] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }; // iv_block gets written to, provide own fresh copy...
-  String decrypted = security_decrypt((char*)incoming.c_str(), dec_iv);  
-  incoming = decrypted;
+  uint16_t decrypted_len = security_decrypt((byte*)incoming.c_str(), incoming.length(), dec_iv, cleartext);  
   Serial.print("Decrypted: ");
-  Serial.println( decrypted );
+  Serial.println( cleartext );
 
-  if (messageLength != decrypted.length()) {  // check length for error
+  if (messageLength != decrypted_len) {  // check length for error
     Serial.print("warning: message length does not match length: ");
     Serial.print( messageLength );
     Serial.print(" decrypted len was: "); 
-    Serial.println( decrypted.length() );
+    Serial.println( decrypted_len );
     return (false);                             // skip rest of function
   }
  
   // get details about the signal strength
   rssi = String(LoRa.packetRssi());
   snr = String(LoRa.packetSnr());
-  
+
+  // return the decypted text
+  incoming = String(cleartext);
   return(true);
 }
 

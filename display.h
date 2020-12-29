@@ -27,7 +27,7 @@ void init_Display()
   // Initialising the UI will init the display too.
   Serial.println("init_Display called");
   display.init();
-  display.flipScreenVertically();
+  //display.flipScreenVertically();
   display.setFont(ArialMT_Plain_24);
   display.setTextAlignment(TEXT_ALIGN_LEFT);
   display.drawString(0, 24, "STARTING");
@@ -40,7 +40,7 @@ void init_Display()
 // Display up to 4 lines of text.
 //
 // ----------------------------------------------------------------
-void display_Lines(String msg, String scndLine = "", String thrdLine = "" , String fourthLine = "") 
+void display_Lines(String msg, String scndLine = "", String thrdLine = "" , String fourthLine = "", String fithLine = "") 
 {
   // Initialising the UI will init the display too.
   //Serial.println( "display_Lines called");
@@ -50,10 +50,11 @@ void display_Lines(String msg, String scndLine = "", String thrdLine = "" , Stri
   display.setTextAlignment(TEXT_ALIGN_LEFT);
   display.drawString(0,  0, msg.c_str());
   display.setFont(ArialMT_Plain_16);  
-  display.drawString(0, 16, scndLine.c_str()); 
+  display.drawString(0, 12, scndLine.c_str()); 
   display.setFont(ArialMT_Plain_10);
-  display.drawString(0, 54, thrdLine.c_str());
-  display.drawString(0, 44, fourthLine.c_str());
+  display.drawString(0, 34, thrdLine.c_str());
+  display.drawString(0, 42, fourthLine.c_str());
+  display.drawString(0, 50, fithLine.c_str());
   display.display();
   //Serial.println( "display_Lines complete");
   return;
