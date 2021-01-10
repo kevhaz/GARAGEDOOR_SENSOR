@@ -66,11 +66,14 @@ bool onReceive(int packetSize, String& incoming, String& rssi, String& snr )
   Serial.println( cleartext );
 
   if (messageLength != decrypted_len) {  // check length for error
-    Serial.print("warning: message length does not match length: ");
+    Serial.print("warning: message length does not match length. Trying to truncate");
     Serial.print( messageLength );
     Serial.print(" decrypted len was: "); 
     Serial.println( decrypted_len );
-    return (false);                             // skip rest of function
+    if (decrypted_len > messageLength) {
+      cleartext[messageLength] = '\0';
+    }
+    //return (false);                             // skip rest of function
   }
  
   // get details about the signal strength
@@ -81,5 +84,3 @@ bool onReceive(int packetSize, String& incoming, String& rssi, String& snr )
   incoming = String(cleartext);
   return(true);
 }
-
-

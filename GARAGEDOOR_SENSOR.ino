@@ -3,7 +3,6 @@
 // This is the ESP32 TTGO Lora Garage Door Sensor Sketch
 //
 // It senses when the garage door is fully open or fully closed. 
-// It also reports on the approximate angle of the garage door.
 // I might also be a temperature and humidity gauge for the garage
 //
 ///////////////////////////////////////////////////////////////////////
@@ -20,6 +19,8 @@
 // to operate the relay that operates the garage remote control
 #define PIN_RELAY    17 
 
+// manual door button
+#define PIN_DOOR     12
 
 // for debouncing
 #define DEBOUNCE_DELAY 50
@@ -27,8 +28,11 @@
 // global variables.
 unsigned long CloseSwitchChangeTime = 0;
 unsigned long OpenSwitchChangeTime = 0;
-int CloseSwitchTriggered = 0;
-int OpenSwitchTriggered = 0;
+unsigned long CloseSwitchTriggered = 0;
+unsigned long OpenSwitchTriggered = 0;
+
+unsigned long OperateDoorChangeTime = 0;
+unsigned long OperateDoorTriggered = 0;
 
 // GARAGE DOOR STATUS -> This is what we think the garage door is doing.
 typedef enum {
@@ -47,7 +51,7 @@ typedef struct {
   DOORSTATUS    status;
   DOORSTATUS    prevstatus;   // this is set, each time we send "status"
   int           repeat;
-  int           startUpTime;
+  //int           startUpTime;
   unsigned long timeOfLastChange;
 } LASTSTATE;
 LASTSTATE lastState;
@@ -57,8 +61,8 @@ byte  destination  = 0xBB;     // destination to send to
 int   counter      = 0;
 
 // variables for LoRa (time to send message) interupt.
-volatile int interruptLoRaCounter = 0;
-int          totalInterruptLoRaCounter = 0;
+volatile int    interruptLoRaCounter = 0;
+unsigned long   totalInterruptLoRaCounter = 0;
 hw_timer_t * timerLoRa = NULL;
 portMUX_TYPE timerLoRaMux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -91,10 +95,10 @@ void transmitLoRaMessage( void* parameter )
           totalInterruptLoRaCounter++;
 
          
-          Serial.print("On core ");
-          Serial.print(xPortGetCoreID());
-          Serial.print(" a LoRa interrupt has occurred. Total number: ");
-          Serial.println(totalInterruptLoRaCounter);
+          //Serial.print("On core ");
+          //Serial.print(xPortGetCoreID());
+          //Serial.print(" a LoRa interrupt has occurred. Total number: ");
+          //Serial.println(totalInterruptLoRaCounter);
 
           char message[128];
 
@@ -204,6 +208,20 @@ void handleDoorOpeningInterrupt() {
   // Serial.println( "Open Triggered" );  <- this appears on rising and falling edges
 }
 
+// ----------------------------------------------------------------
+//
+// This is called each time the interupt for the open door switch changes
+// due to switch bounce this can be called multiple times for one "click"
+// ----------------------------------------------------------------
+void handleManualDoorOperation() {
+  if (OperateDoorChangeTime==0)
+  {
+    OperateDoorChangeTime = millis();
+  } 
+  OperateDoorTriggered++; // this counts the number of switch bounces
+  Serial.println( "Manual Door Operation Triggered" );  // <- this appears on falling edges
+}
+
 
 void ResetDoorStatus()
 {
@@ -239,10 +257,12 @@ void setup() {
 
   // define the relay output pin
   pinMode(PIN_RELAY, OUTPUT);
-  digitalWrite(PIN_RELAY, HIGH);
+ 
   // Set up switch interrupts
   pinMode( PIN_SW_CLOSE, INPUT_PULLUP);
   pinMode( PIN_SW_OPEN,  INPUT_PULLUP);
+  // manual door override
+  pinMode( PIN_DOOR, INPUT_PULLDOWN );
 
   ResetDoorStatus();
 
@@ -253,14 +273,15 @@ void setup() {
   
   attachInterrupt(digitalPinToInterrupt(PIN_SW_CLOSE), handleDoorClosingInterrupt, CHANGE);
   attachInterrupt(digitalPinToInterrupt(PIN_SW_OPEN), handleDoorOpeningInterrupt, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(PIN_DOOR), handleManualDoorOperation, FALLING);
 
   // lets get the interupt timer started for....
   timerLoRa = timerBegin(1, 80, true);     // this "turns" 80Mz into 1Mhz
   timerAttachInterrupt(timerLoRa, &onLoRaTimer, true);
-  timerAlarmWrite(timerLoRa, 5000000, true); // this "turns" 1Mhz into 5,0 seconds.
+  timerAlarmWrite(timerLoRa, 1000000, true); // this "turns" 1Mhz into 5.0 seconds.
   timerAlarmEnable(timerLoRa);
 
-  lastState.startUpTime = millis();
+//  lastState.startUpTime = millis();
 
   xTaskCreatePinnedToCore(
       transmitLoRaMessage, "xmitLoRa", 10000, 
@@ -302,6 +323,7 @@ void loop() {
   // check to see what's happening
   bool bCloseSwitchChanged = false;
   bool bOpenSwitchChanged = false;
+  bool bDoorTriggered = false;
 
   int intLastOpenValue =   lastState.intOpen;
   int intLastCloseValue =  lastState.intClose;
@@ -334,6 +356,24 @@ void loop() {
       bCloseSwitchChanged = true;
     }
   }
+
+
+  if ( OperateDoorChangeTime!=0 && (millis() - OperateDoorChangeTime > (10*DEBOUNCE_DELAY) ) )
+  {
+    // Button has been pressed then released. Here we just need to trigger the remote via the relay and move on.
+    OperateDoorChangeTime = 0;
+    bDoorTriggered = true;
+
+    int butState = digitalRead(PIN_DOOR);
+    if (0 == butState) 
+    {   
+      Serial.println( "**Activating remote manual**" );         
+      digitalWrite(PIN_RELAY, LOW);
+      delay(400);
+      digitalWrite(PIN_RELAY, HIGH); 
+    }
+  }
+
   
   if ( bOpenSwitchChanged ) 
   {
