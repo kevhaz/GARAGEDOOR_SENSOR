@@ -3,7 +3,6 @@
 // This is the ESP32 TTGO Lora Garage Door Sensor Sketch
 //
 // It senses when the garage door is fully open or fully closed. 
-// I might also be a temperature and humidity gauge for the garage
 //
 ///////////////////////////////////////////////////////////////////////
 #include <SPI.h>
@@ -11,6 +10,7 @@
 #include "display.h"
 #include "security.h"
 #include "gg_lora.h"
+
 
 
 // PIN definitions for switches
@@ -46,13 +46,12 @@ typedef enum {
 
 // I want to record the last stable measurement from the sensors
 typedef struct {
-  int           intOpen;
-  int           intClose;
-  DOORSTATUS    status;
-  DOORSTATUS    prevstatus;   // this is set, each time we send "status"
-  int           repeat;
-  //int           startUpTime;
-  unsigned long timeOfLastChange;
+  int             intOpen;
+  int             intClose;
+  DOORSTATUS      status;
+  DOORSTATUS      prevstatus;   // this is set, each time we send "status"
+  unsigned long   repeat;
+  unsigned long   timeOfLastChange;
 } LASTSTATE;
 LASTSTATE lastState;
 
@@ -62,69 +61,55 @@ int   counter      = 0;
 
 // variables for LoRa (time to send message) interupt.
 volatile int    interruptLoRaCounter = 0;
-unsigned long   totalInterruptLoRaCounter = 0;
-hw_timer_t * timerLoRa = NULL;
-portMUX_TYPE timerLoRaMux = portMUX_INITIALIZER_UNLOCKED;
+hw_timer_t *    timerLoRa = NULL;
+portMUX_TYPE    timerLoRaMux = portMUX_INITIALIZER_UNLOCKED;
 
 // we plan to transmit LORA message on a sperate thread
 TaskHandle_t taskLoRa;
 
 // Onscreen Information
 String os_header = "Garage Sensor";
-String os_rssi = "";
-String os_snr = "";
-String os_cmd = "";
-String os_ts = "";
+String os_rssi   = "";
+String os_snr    = "";
+String os_cmd    = "";
+String os_ts     = "";
 
+int    xmitFrequencySkip = 20;
 
 
 // ----------------------------------------------------------------
-//
-void transmitLoRaMessage( void* parameter )
+// transmitCurrentStatus....
+// This sends via LoRa, the current status of the door
+// ---------------------------------------------------------------- 
+void transmitCurrentStatus()
 {
-    float angle;
-    
-    // create an infinite loop
-    for(;;) {
-        // lets see if it is time to make a sensor measurement...
-        if (interruptLoRaCounter > 0) {
-          portENTER_CRITICAL(&timerLoRaMux);
-          interruptLoRaCounter--;
-          portEXIT_CRITICAL(&timerLoRaMux);
-      
-          totalInterruptLoRaCounter++;
-
-         
-          //Serial.print("On core ");
-          //Serial.print(xPortGetCoreID());
-          //Serial.print(" a LoRa interrupt has occurred. Total number: ");
-          //Serial.println(totalInterruptLoRaCounter);
-
-          char message[128];
-
-          // but...do I want to send the message. Each state change is sent twice only.
-          if ( lastState.status != lastState.prevstatus ) {
-            sprintf( message, "{frm:%d,to:%d,cnt:%d,ds:%d,t:%d}", localAddress, destination, counter++, (int)lastState.status, (int)lastState.timeOfLastChange );
-            loraSendMessage( message );
-            lastState.prevstatus = lastState.status;
-            lastState.repeat = true;
-          } else {
-            if ( lastState.repeat ) {
-              sprintf( message, "{frm:%d,to:%d,cnt:%d,ds:%d,t:%d}", localAddress, destination, counter++, (int)lastState.status, (int)lastState.timeOfLastChange );
-              loraSendMessage( message );
-              lastState.repeat = false;
-            }
-          }
-        }
+  char message[128];
+  // but...do I actually want to send the message. Each state change is sent only, then again, then every x interupt ticks afterwards.
+  if ( lastState.status != lastState.prevstatus ) {
+    // This will be the 1st message we send after a detected state change
+    sprintf( message, "{ds:%d,frm:%d,to:%d,cnt:%d,t:%d}", (int)lastState.status, localAddress, destination, counter++, (int)lastState.timeOfLastChange );
+    loraSendMessage( message );
+    lastState.prevstatus = lastState.status;
+    lastState.repeat = 0;
+  } else {
+    // we get here, when there is no status change
+    Serial.print("lastState.repeat=");
+    Serial.println(lastState.repeat);
+    if ( 0 == lastState.repeat || 0 == lastState.repeat % xmitFrequencySkip ) {
+      // here we need to repeat the previous message (the 1st is repeated after 1 min, then each 5 mins after that)
+      sprintf( message, "{ds:%d,frm:%d,to:%d,cnt:%d,t:%d}", (int)lastState.status, localAddress, destination, counter++, (int)lastState.timeOfLastChange );
+      loraSendMessage( message );
+      lastState.repeat = 0;
     }
+    lastState.repeat++;     
+  }
+  return;
 }
 
-
 // ----------------------------------------------------------------
 //
-// Interupt Handler....I'm going to use this to time when to make
-// an angle measurement which I don't want to have to do to frequently.
-// in normal opperation this only need to be done say, every 2 seconds(?)
+// Interupt Handler....this is used to time the updating of
+// reading the garage status
 // ---------------------------------------------------------------- 
 void IRAM_ATTR onLoRaTimer() {
   portENTER_CRITICAL_ISR(&timerLoRaMux);
@@ -219,7 +204,7 @@ void handleManualDoorOperation() {
     OperateDoorChangeTime = millis();
   } 
   OperateDoorTriggered++; // this counts the number of switch bounces
-  Serial.println( "Manual Door Operation Triggered" );  // <- this appears on falling edges
+  //Serial.println( "Manual Door Operation Triggered" );  // <- this appears on falling edges
 }
 
 
@@ -245,7 +230,7 @@ void ResetDoorStatus()
 
   // the next we need to do is ensure we send this status. This only sends the 1st message once 
   lastState.prevstatus = lastState.status;
-  lastState.repeat = false;
+  lastState.repeat = 0;
   
 }
 
@@ -257,6 +242,7 @@ void setup() {
 
   // define the relay output pin
   pinMode(PIN_RELAY, OUTPUT);
+  digitalWrite(PIN_RELAY, HIGH);
  
   // Set up switch interrupts
   pinMode( PIN_SW_CLOSE, INPUT_PULLUP);
@@ -266,11 +252,10 @@ void setup() {
 
   ResetDoorStatus();
 
-  // now show we are ready to go on the display
+  init_security();
+  init_Lora();
   init_Display();
 
-  init_Lora();
-  
   attachInterrupt(digitalPinToInterrupt(PIN_SW_CLOSE), handleDoorClosingInterrupt, CHANGE);
   attachInterrupt(digitalPinToInterrupt(PIN_SW_OPEN), handleDoorOpeningInterrupt, CHANGE);
   attachInterrupt(digitalPinToInterrupt(PIN_DOOR), handleManualDoorOperation, FALLING);
@@ -278,22 +263,12 @@ void setup() {
   // lets get the interupt timer started for....
   timerLoRa = timerBegin(1, 80, true);     // this "turns" 80Mz into 1Mhz
   timerAttachInterrupt(timerLoRa, &onLoRaTimer, true);
-  timerAlarmWrite(timerLoRa, 1000000, true); // this "turns" 1Mhz into 5.0 seconds.
+  timerAlarmWrite(timerLoRa, 1000000, true); // this "turns" 1Mhz into 1.0 seconds.
   timerAlarmEnable(timerLoRa);
 
-//  lastState.startUpTime = millis();
-
-  xTaskCreatePinnedToCore(
-      transmitLoRaMessage, "xmitLoRa", 10000, 
-      NULL,  /* Task input parameter */
-      0,  /* Priority of the task */
-      &taskLoRa,  /* Task handle. */
-      0); /* Core where the task should run */
-
-  Serial.print("Main loop running on core ");
-  Serial.println(xPortGetCoreID());
-
   display_Lines( "READY", doorStatusToString(lastState.status) );
+
+  Serial.flush();
 }
 
 // Not used at present....maybe one day
@@ -322,12 +297,11 @@ void InstigateGarageDoorOpenClose()
 void loop() {
   // check to see what's happening
   bool bCloseSwitchChanged = false;
-  bool bOpenSwitchChanged = false;
-  bool bDoorTriggered = false;
+  bool bOpenSwitchChanged  = false;
+  bool bDoorTriggered      = false;
 
-  int intLastOpenValue =   lastState.intOpen;
+  int intLastOpenValue  =  lastState.intOpen;
   int intLastCloseValue =  lastState.intClose;
-
 
   if ( OpenSwitchChangeTime!=0 && (millis() - OpenSwitchChangeTime > DEBOUNCE_DELAY ) )
   {
@@ -357,7 +331,6 @@ void loop() {
     }
   }
 
-
   if ( OperateDoorChangeTime!=0 && (millis() - OperateDoorChangeTime > (10*DEBOUNCE_DELAY) ) )
   {
     // Button has been pressed then released. Here we just need to trigger the remote via the relay and move on.
@@ -373,7 +346,6 @@ void loop() {
       digitalWrite(PIN_RELAY, HIGH); 
     }
   }
-
   
   if ( bOpenSwitchChanged ) 
   {
@@ -397,7 +369,7 @@ void loop() {
           newState = DS_CLOSING;
       }  
     }
-    String msg = "Open door switch caused changed from ";
+    String msg = "Open door switch caused change from ";
     msg += doorStatusToString(lastState.status);
     msg += " to ";
     msg += doorStatusToString(newState);
@@ -405,7 +377,6 @@ void loop() {
     lastState.status = newState;
     lastState.timeOfLastChange = millis();    
   } // if
-
 
   if ( bCloseSwitchChanged ) 
   {
@@ -441,17 +412,35 @@ void loop() {
 
   delay(100);
 
-  String incoming_msg;
-  if (onReceive(LoRa.parsePacket(), incoming_msg, os_rssi, os_snr )) {
-     // got something
+  String incoming_msg = "";
+  int msg_len = onReceive(LoRa.parsePacket(), incoming_msg, os_rssi, os_snr );
+  if (msg_len > 0) {
+    // got something
+    char cleartext[INPUT_BUFFER_LIMIT] = {0}; // THIS IS INPUT BUFFER (FOR TEXT)
+    // assume incomming is encrypted so....
+    // decrypt it
+    byte dec_iv[N_BLOCK] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }; // iv_block gets written to, provide own fresh copy...     
+    uint16_t decrypted_len = security_decrypt((byte*)incoming_msg.c_str(), incoming_msg.length(), dec_iv, cleartext);  
+ 
+    Serial.print("Decrypted: ");
+    Serial.println( cleartext );
+  
+    if (msg_len != decrypted_len) {  // check length for error
+      Serial.print("warning: message length does not match length. Trying to truncate");
+      Serial.print( msg_len );
+      Serial.print(" decrypted len was: "); 
+      Serial.println( decrypted_len );
+      if (decrypted_len > msg_len) {
+        cleartext[msg_len] = '\0';
+      }
+    }
      // but now need to deserialise decypted message into JSON object and use that to work out what to do next
     DynamicJsonDocument jsonBuffer(512);
-    DeserializationError error = deserializeJson(jsonBuffer, incoming_msg); 
+    DeserializationError error = deserializeJson(jsonBuffer, cleartext); 
     // Test if parsing succeeds.
-    if (error) {
+    if (DeserializationError::Ok != error) {
       Serial.println("gg_lora: onReceived(): parseObject() failed");
     } else {
-  
       // is message for this device?
       // if the recipient isn't this for this device or broadcast
       byte recipient = jsonBuffer[String("to")];
@@ -476,10 +465,34 @@ void loop() {
         delay(400);
         digitalWrite(PIN_RELAY, HIGH);        
       }
+      if (cmd.equals("HELLO")) {       
+        // I could send a Message back?
+        char message[128];
+        sprintf( message, "{ack:1,frm:%d,to:%d,cnt:%d}", localAddress, destination, counter++ );
+        loraSendMessage(message);
+      }
+      // xmitFrequencySkip
+      String subcmd = cmd.substring(0,4);
+      if (subcmd.equals("SETX")) {
+        String number = cmd.substring(4);     
+        int newVal = number.toInt();
+        if (newVal > 0 && newVal < 120) {
+          Serial.print("Setting new skip frequency to ");
+          Serial.println(newVal);
+          xmitFrequencySkip = newVal;
+        }
+      }
+    }
+  } // if (onReceive
 
-    }  
+  if (interruptLoRaCounter > 0) {
+    portENTER_CRITICAL(&timerLoRaMux);
+    interruptLoRaCounter = 0;   
+    portEXIT_CRITICAL(&timerLoRaMux);   
+    // send status
+    transmitCurrentStatus();
   }
 
   updateDisplay();
-
+   
 }
