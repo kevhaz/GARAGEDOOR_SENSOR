@@ -5,6 +5,8 @@
 // It senses when the garage door is fully open or fully closed. 
 //
 ///////////////////////////////////////////////////////////////////////
+#define TTGO_V2116
+
 #include <SPI.h>
 #include <ArduinoJson.h>
 #include "display.h"
@@ -12,15 +14,39 @@
 #include "gg_lora.h"
 
 
+#ifdef TTGO_V2116
+/*
+ * INPUT PINS
+ */
+// PIN definitions for switches
+#define PIN_SW_CLOSE 15
+#define PIN_SW_OPEN  12
+// manual door button
+#define PIN_DOOR     14
+/*
+ * Output Pins
+ */
+// to operate the relay that operates the garage remote control
+#define PIN_RELAY    13
 
+#else
+/*
+ * INPUT PINS
+ */
 // PIN definitions for switches
 #define PIN_SW_CLOSE 13
 #define PIN_SW_OPEN  21
-// to operate the relay that operates the garage remote control
-#define PIN_RELAY    17 
-
 // manual door button
 #define PIN_DOOR     12
+/*
+ * Output Pins
+ */
+// to operate the relay that operates the garage remote control
+#define PIN_RELAY    17 
+#endif
+
+
+
 
 // for debouncing
 #define DEBOUNCE_DELAY 50
@@ -242,13 +268,13 @@ void setup() {
 
   // define the relay output pin
   pinMode(PIN_RELAY, OUTPUT);
-  digitalWrite(PIN_RELAY, HIGH);
+  digitalWrite(PIN_RELAY, LOW);
  
   // Set up switch interrupts
   pinMode( PIN_SW_CLOSE, INPUT_PULLUP);
   pinMode( PIN_SW_OPEN,  INPUT_PULLUP);
   // manual door override
-  pinMode( PIN_DOOR, INPUT_PULLDOWN );
+  pinMode( PIN_DOOR, INPUT_PULLUP ); 
 
   ResetDoorStatus();
 
@@ -341,9 +367,9 @@ void loop() {
     if (0 == butState) 
     {   
       Serial.println( "**Activating remote manual**" );         
-      digitalWrite(PIN_RELAY, LOW);
+      digitalWrite(PIN_RELAY, HIGH);
       delay(400);
-      digitalWrite(PIN_RELAY, HIGH); 
+      digitalWrite(PIN_RELAY, LOW); 
     }
   }
   
@@ -460,10 +486,20 @@ void loop() {
       Serial.println( cmd ); 
       // at this point we have to "handle" the message. E.g. open or close the garage door?
       if (cmd.equals("OPEN") || cmd.equals("CLOSE")) {
-        Serial.println( "**Activating remote**" );         
-        digitalWrite(PIN_RELAY, LOW);
-        delay(400);
-        digitalWrite(PIN_RELAY, HIGH);        
+
+        // of we do this whilst the garage door is opening or closing...it will just stop the door. But the door might be stuck open or closed?
+        // so what tod do?
+
+//        if (cmd.equals("OPEN") && lastState.status == DS_OPEN ) {
+          // Door already open..ignore
+//        } else if (cmd.equals("CLOSE") && lastState.status == DS_CLOSED ) {
+          // door already closed....ignore
+//        } else {       
+          Serial.println( "**Activating remote**" );         
+          digitalWrite(PIN_RELAY, HIGH);
+          delay(400);
+          digitalWrite(PIN_RELAY, LOW);   
+//        }     
       }
       if (cmd.equals("HELLO")) {       
         // I could send a Message back?

@@ -4,9 +4,15 @@
 #include "security.h"
 
 // These constants are defined so we can use LORA
+#ifdef TTGO_V2116
+#define LORA_SS   18
+#define LORA_RST  23
+#define LORA_DIO0 26
+#else // for TTGO V1.1 or Heltech
 #define LORA_SS   18
 #define LORA_RST  14
 #define LORA_DIO0 26
+#endif
 
 //
 // I've noticed that a thread can get blocked when entering this function....
@@ -33,7 +39,7 @@ void loraSendMessage( char* msg )
   LoRa.beginPacket();               // start packet
   LoRa.write(msgLen);               // add payload length
   LoRa.print(ciphertext);           // add payload
-  LoRa.endPacket();  
+  LoRa.endPacket();
 
   Serial.println( "gg_lora.h: loraSendMessage complete" );
   Serial.flush();
@@ -50,8 +56,8 @@ void init_Lora()
   }
   LoRa.enableCrc();
   LoRa.setSpreadingFactor(10);
-  LoRa.setTxPower(20);
-  LoRa.setGain(6);
+  //LoRa.setTxPower(19);
+  //LoRa.setGain(6);
   LoRa.setSyncWord(0xe3);
   
   Serial.println("gg_lora.h: LoRa Initialised OK!");
@@ -76,34 +82,3 @@ int onReceive(int packetSize, String& incoming, String& rssi, String& snr )
     
   return messageLength;
 }
-
-/*
-
-  // assume incomming is encrypted
-  // Decrypt
-  byte dec_iv[N_BLOCK] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }; // iv_block gets written to, provide own fresh copy...
-  uint16_t decrypted_len = security_decrypt((byte*)incoming.c_str(), incoming.length(), dec_iv, cleartext);  
-  Serial.print("Decrypted: ");
-  Serial.println( cleartext );
-
-  if (messageLength != decrypted_len) {  // check length for error
-    Serial.print("warning: message length does not match length. Trying to truncate");
-    Serial.print( messageLength );
-    Serial.print(" decrypted len was: "); 
-    Serial.println( decrypted_len );
-    if (decrypted_len > messageLength) {
-      cleartext[messageLength] = '\0';
-    }
-    //return (false);                             // skip rest of function
-  }
- 
-  // get details about the signal strength
-  rssi = String(LoRa.packetRssi());
-  snr = String(LoRa.packetSnr());
-
-  // return the decypted text
-  incoming = String(cleartext);
-  return(true);
-}
-
-*/

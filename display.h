@@ -3,10 +3,18 @@
 #include <SSD1306.h>
 
 // OLED pins to ESP32 GPIOs via these pins:
+
+#ifdef TTGO_V2116
+#define OLED_ADDR 0x3c
+#define OLED_SDA  21 
+#define OLED_SCL  22
+//#define OLED_RST  16 
+#else // default for TTGO V1.1
 #define OLED_ADDR 0x3c
 #define OLED_SDA  4 //  GPIO4
 #define OLED_SCL  15 // GPIO15
 #define OLED_RST  16 // GPIO16
+#endif 
 
 SSD1306 display(OLED_ADDR, OLED_SDA, OLED_SCL);
 
@@ -17,17 +25,25 @@ SSD1306 display(OLED_ADDR, OLED_SDA, OLED_SCL);
 // ----------------------------------------------------------------
 void init_Display() 
 {
+  Serial.println("init_Display called");  
 #if defined OLED_RST
+  Serial.println( "Reseting OLED" );
   pinMode(OLED_RST,OUTPUT);
-  digitalWrite(OLED_RST, LOW);  // low to reset OLED
+  digitalWrite(OLED_RST, LOW);    // low to reset OLED
   delay(50); 
   digitalWrite(OLED_RST, HIGH);   // must be high to turn on OLED
   delay(50);
 #endif  
   // Initialising the UI will init the display too.
-  Serial.println("init_Display called");
+  // Initialising the UI will init the display too.
+  Serial.print( "OLED_SDA=" );
+  Serial.println( OLED_SDA );
+  
+  Serial.print( "OLED_SCL=" );
+  Serial.println( OLED_SCL );  
+  
   display.init();
-  //display.flipScreenVertically();
+  display.flipScreenVertically();
   display.setFont(ArialMT_Plain_24);
   display.setTextAlignment(TEXT_ALIGN_LEFT);
   display.drawString(0, 24, "STARTING");
